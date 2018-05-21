@@ -14,5 +14,7 @@ trait GreetingModule extends ServicesModule {
 
   def messagesApi: MessagesApi
 
-  lazy val greeterController: GreeterController = wire[GreeterController]
+  lazy val greetingRepository: GreetingRepository = wire[GreetingRepository]
+
+  lazy val greetingController: GreetingController = wire[GreetingController]
 }
