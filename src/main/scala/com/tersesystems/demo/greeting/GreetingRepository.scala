@@ -4,8 +4,6 @@ import java.time.ZonedDateTime
 import java.time.temporal.{ChronoField, TemporalAccessor, TemporalQuery}
 import java.util.Locale
 
-import cats.Id
-
 class GreetingRepository {
   import GreetingRepository._
 
@@ -75,7 +73,7 @@ class GreetingRepository {
 
   private object capabilities {
     val finder: Finder = new Finder() {
-      override def find(locale: Locale, zonedDateTime: ZonedDateTime): Id[Option[Greeting]] = {
+      override def find(locale: Locale, zonedDateTime: ZonedDateTime): Option[Greeting] = {
         GreetingRepository.this.find(locale, zonedDateTime: ZonedDateTime)
       }
     }
