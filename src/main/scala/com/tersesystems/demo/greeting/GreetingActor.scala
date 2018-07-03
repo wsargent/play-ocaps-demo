@@ -23,7 +23,7 @@ class GreetingActor(gatekeeper: ActorRef) extends Actor {
 
   private val logger = org.slf4j.LoggerFactory.getLogger("application")
 
-  private[this] val brand = Brand.create[(Locale, Finder)](s"Brand for actor $self")
+  private[this] val brand = Brand.create[(Locale, Finder)](s"Brand($self)")
 
   private[this] var finderMap: Map[Locale, Finder] = Map()
 

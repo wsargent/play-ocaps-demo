@@ -41,30 +41,43 @@ import akka.actor.{Actor, ActorRef, ActorSystem, Props}
 import akka.pattern.ask
 import akka.util.Timeout
 import com.tersesystems.demo.greeting.GreetingRepository.Finder
+import com.tersesystems.demo.greeting.GreetingService.Gatekeeper
 import ocaps.{Revocable, Revoker}
 
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 
-class GreetingService(system: ActorSystem)(implicit executionContext: ExecutionContext) {
+class GreetingService(system: ActorSystem, greetingRepository: GreetingRepository)(implicit executionContext: ExecutionContext) {
 
-  private[this] implicit val timeout: Timeout = Timeout(100.millis)
+  private implicit val timeout: Timeout = Timeout(100.millis)
 
-  private[this] val greetingRepository: GreetingRepository = new GreetingRepository()
+  private val gatekeeper = {
+    val rootFinder = GreetingRepository.Access().finder(greetingRepository)
+    system.actorOf(Gatekeeper.props(rootFinder), "gatekeeper")
+  }
 
-  private[this] val rootFinder = GreetingRepository.Access().finder(greetingRepository)
-
-  private[this] val gatekeeper = system.actorOf(Props(classOf[Gatekeeper]), "gatekeeper")
-
-  private[this] val greeter = system.actorOf(GreetingActor.props(gatekeeper), "greeter")
+  private val greeter = system.actorOf(GreetingActor.props(gatekeeper), "greeter")
 
   def greet(locale: Locale, time: ZonedDateTime): Future[String] = {
     (greeter ? GreetingActor.Greet(locale, time)).mapTo[String]
   }
+}
 
-  private class Gatekeeper extends Actor {
+object GreetingService {
+
+  class Gatekeeper(rootFinder: Finder) extends Actor {
+    private var revokerMap: Map[ActorRef, Revoker] = Map()
+
+    override def receive: Receive = {
+      case GreetingActor.RequestFinder(locale, sealer) =>
+        sender() ! sealer(locale, revocableFinder(restrictedFinder(locale)))
+      case Gatekeeper.RevokeAll =>
+        revokerMap.mapValues(_.revoke())
+    }
 
     private def revocableFinder(finder: Finder) = {
+      // usually we use a macro, but use the explicit version here so we can print
+      // out the capability chain in the toString()
       // val Revocable(revocableFinder, revoker) = ocaps.macros.revocable[Finder](finder)
       val Revocable(revocableFinder, revoker) = Revocable(finder) { thunk =>
         new Finder {
@@ -72,7 +85,8 @@ class GreetingService(system: ActorSystem)(implicit executionContext: ExecutionC
           override def toString: String = s"""RevocableFinder(${thunk()})"""
         }
       }
-      system.actorOf(RevokeOnActorDeath.props(sender(), revoker))
+      revokerMap += sender() -> revoker
+      context.system.actorOf(RevokeOnActorDeath.props(sender(), revoker))
       revocableFinder
     }
 
@@ -87,11 +101,12 @@ class GreetingService(system: ActorSystem)(implicit executionContext: ExecutionC
 
       override def toString: String = s"""Finder($localeRestriction)"""
     }
+  }
 
-    override def receive: Receive = {
-      case GreetingActor.RequestFinder(locale, sealer) =>
-        sender() ! sealer(locale, revocableFinder(restrictedFinder(locale)))
-    }
+  object Gatekeeper {
+    def props(finder: Finder): Props = Props(new Gatekeeper(finder))
+
+    case object RevokeAll
   }
 }
 ```
@@ -128,7 +143,7 @@ class GreetingActor(gatekeeper: ActorRef) extends Actor {
 
   private val logger = org.slf4j.LoggerFactory.getLogger("application")
 
-  private[this] val brand = Brand.create[(Locale, Finder)](s"Brand for actor $self")
+  private[this] val brand = Brand.create[(Locale, Finder)](s"Brand($self)")
 
   private[this] var finderMap: Map[Locale, Finder] = Map()
 

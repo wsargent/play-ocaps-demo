@@ -1,0 +1,4 @@
+morning=Bonjour!
+day=Bonjour!
+afternoon=Bon apre-midi!
+night=Bon nuit!

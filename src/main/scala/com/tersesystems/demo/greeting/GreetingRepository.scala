@@ -1,73 +1,51 @@
 package com.tersesystems.demo.greeting
 
 import java.time.ZonedDateTime
-import java.time.temporal.{ChronoField, TemporalAccessor, TemporalQuery}
+import java.time.temporal.ChronoField.CLOCK_HOUR_OF_DAY
+import java.time.temporal.TemporalQuery
 import java.util.Locale
 
-class GreetingRepository {
+import play.api.i18n.{Lang, MessagesApi}
+
+class GreetingRepository(messagesApi: MessagesApi) {
   import GreetingRepository._
 
-  private val englishGreetings = Seq(
-    Greeting(message = "Good morning!", name = "morning"),
-    Greeting(message = "Good day!", name = "day"),
-    Greeting(message = "Good afternoon!", name = "afternoon"),
-    Greeting(message = "Good evening!", name = "evening")
-  )
+  private val logger = org.slf4j.LoggerFactory.getLogger(getClass)
 
-  private val frenchGreetings = Seq(
-    Greeting(message = "Bonjour!", name = "morning"),
-    Greeting(message = "Bonjour!", name = "day"),
-    Greeting(message = "Bon apre-midi!", name = "afternoon"),
-    Greeting(message = "Bon nuit!", name = "evening")
-  )
-
-  private val isMorning = new TemporalQuery[Boolean] {
-    override def queryFrom(time: TemporalAccessor): Boolean = {
-      if (time.get(ChronoField.CLOCK_HOUR_OF_DAY) < 12) true else false
+  private def findTimeOfDay(date: ZonedDateTime): String = {
+     val isMorning: TemporalQuery[Boolean] = _.get(CLOCK_HOUR_OF_DAY) < 12
+     val isDay: TemporalQuery[Boolean] = _.get(CLOCK_HOUR_OF_DAY) == 12
+     val isAfternoon: TemporalQuery[Boolean] = time => {
+      def hour = time.get(CLOCK_HOUR_OF_DAY)
+      hour > 12 && hour < 20
     }
-  }
+    val isNight: TemporalQuery[Boolean] = _.get(CLOCK_HOUR_OF_DAY) <= 20
 
-  private val isDay = new TemporalQuery[Boolean] {
-    override def queryFrom(time: TemporalAccessor): Boolean = {
-      if (time.get(ChronoField.CLOCK_HOUR_OF_DAY) == 12) true else false
-    }
-  }
-
-  private val isAfternoon = new TemporalQuery[Boolean] {
-    override def queryFrom(time: TemporalAccessor): Boolean = {
-      val hour = time.get(ChronoField.CLOCK_HOUR_OF_DAY)
-      if (hour > 12 && hour < 20) true else false
-    }
-  }
-
-  private val isNight = new TemporalQuery[Boolean] {
-    override def queryFrom(time: TemporalAccessor): Boolean = {
-      val hour = time.get(ChronoField.CLOCK_HOUR_OF_DAY)
-      if (hour <= 20) true else false
+    if (date.query(isMorning)) {
+      "morning"
+    } else if (date.query(isDay)) {
+      "day"
+    } else if (date.query(isAfternoon)) {
+      "afternoon"
+    } else if (date.query(isNight)) {
+      "night"
+    } else {
+      "unknown"
     }
   }
 
   private def find(locale: Locale, date: ZonedDateTime): Option[Greeting] = {
-    def findTime(greetings: Seq[Greeting]): Option[Greeting] = {
-      if (date.query(isMorning)) {
-         greetings.find(_.name == "morning")
-      } else if (date.query(isDay)) {
-         greetings.find(_.name == "day")
-      } else if (date.query(isDay)) {
-         greetings.find(_.name == "afternoon")
-      } else if (date.query(isNight)) {
-         greetings.find(_.name == "night")
-      } else {
-        None
-      }
-    }
+    val timeOfDay = findTimeOfDay(date)
 
-    if (locale.getLanguage.equals(Locale.ENGLISH.getLanguage)) {
-      findTime(englishGreetings)
-    } else if (locale.getLanguage.equals(Locale.FRENCH.getLanguage)) {
-      findTime(frenchGreetings)
-    } else {
-      None
+    // See https://www.playframework.com/documentation/2.6.x/ScalaI18N
+    implicit val lang: Lang = Lang(locale)
+    messagesApi.translate(timeOfDay, Seq.empty) match  {
+      case Some(message) =>
+        logger.info(s"Found message $message found for lang $lang, timeOfDay = $timeOfDay")
+        Some(Greeting(message, timeOfDay))
+      case None =>
+        logger.error(s"No message found for lang $lang, timeOfDay = $timeOfDay")
+        None
     }
   }
 
@@ -78,9 +56,11 @@ class GreetingRepository {
       }
     }
   }
+
 }
 
 object GreetingRepository {
+
   trait Finder {
     def find(locale: Locale, zonedDateTime: ZonedDateTime): Option[Greeting]
   }
@@ -91,6 +71,8 @@ object GreetingRepository {
 
   object Access {
     private val instance = new Access()
-    def apply(): Access = instance
+
+    def apply(): Access =  instance
   }
+
 }
