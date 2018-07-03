@@ -41,7 +41,7 @@ One thing to note is that the actor makes use of an `ocaps.Brand` to ensure that
 
 The actor model is a natural fit for capabilities, it's a natural question to ask why capabilities are being passed at the class level, rather than at the Actor level.
 
-The reason is that Akka Actors are primarily concerned with concurrency, and actors are a concurrency primitive rather than a security primitive.   As such, you can use `ActorSelection` to reference any actor by name, bypassing the capability ruleset.  There's a similar theme in Pony, where capabilities are 'more related to data safety (in the context of highly parallel computation) than to security" [1](http://habitatchronicles.com/2017/05/what-are-capabilities/#comment-99021).
+The reason is that Akka Actors are primarily concerned with concurrency, and actors are a [concurrency primitive rather than a security primitive](https://en.wikipedia.org/wiki/Object-capability_model#Relationship_of_the_object-capability_model_and_the_Actor_model).   As such, you can use `ActorSelection` to reference any actor by name, bypassing the capability ruleset.  There's a similar theme in Pony, where capabilities are 'more related to data safety (in the context of highly parallel computation) than to security" [1](http://habitatchronicles.com/2017/05/what-are-capabilities/#comment-99021).
 
 Also, it's easy to use ActorRef in an actor context, but awkward to use Actors outside of that context, and ActorRef is opaque.  
 
