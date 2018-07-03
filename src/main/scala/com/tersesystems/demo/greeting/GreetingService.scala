@@ -20,8 +20,7 @@ class GreetingService(system: ActorSystem, greetingRepository: GreetingRepositor
   private implicit val timeout: Timeout = Timeout(100.millis)
 
   private val gatekeeper = {
-    val rootFinder = GreetingRepository.Access().finder(greetingRepository)
-    system.actorOf(Gatekeeper.props(rootFinder), "gatekeeper")
+    system.actorOf(Gatekeeper.props(greetingRepository), Gatekeeper.name)
   }
 
   private val greeter = system.actorOf(GreetingActor.props(gatekeeper), "greeter")
@@ -33,12 +32,19 @@ class GreetingService(system: ActorSystem, greetingRepository: GreetingRepositor
 
 object GreetingService {
 
-  class Gatekeeper(rootFinder: Finder[Id]) extends Actor with Timers {
+  class Gatekeeper(greetingRepository: GreetingRepository) extends Actor with Timers {
+
     import Gatekeeper._
 
     private val logger = org.slf4j.LoggerFactory.getLogger("application")
 
     private var revokerMap: Map[Locale, Revoker] = Map()
+
+    private var rootFinder: Finder[Id] = _
+
+    override def preStart(): Unit = {
+      rootFinder = GreetingRepository.Access(self).finder(greetingRepository)
+    }
 
     override def postStop(): Unit = {
       revokerMap.mapValues(_.revoke())
@@ -114,7 +120,9 @@ object GreetingService {
 
 
   object Gatekeeper {
-    def props(finder: Finder[Id]): Props = Props(new Gatekeeper(finder))
+    val name: String = "gatekeeper"
+
+    def props(greetingRepository: GreetingRepository): Props = Props(new Gatekeeper(greetingRepository))
 
     case class Revoke(locale: Locale)
 

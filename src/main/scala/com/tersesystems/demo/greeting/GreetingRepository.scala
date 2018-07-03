@@ -5,6 +5,7 @@ import java.time.temporal.ChronoField.CLOCK_HOUR_OF_DAY
 import java.time.temporal.TemporalQuery
 import java.util.Locale
 
+import com.tersesystems.demo.greeting.GreetingService.Gatekeeper
 import play.api.i18n.{Lang, MessagesApi}
 
 class GreetingRepository(messagesApi: MessagesApi) {
@@ -69,7 +70,16 @@ object GreetingRepository {
   object Access {
     private val instance = new Access()
 
-    def apply(): Access = instance
+    // We can't prevent someone from calling this, but we can at least
+    // use a whitelist to prevent confused/lazy programmers from using it
+    // indiscriminately.
+    def apply(caller: akka.actor.ActorRef): Access = {
+      if (caller.path.name == Gatekeeper.name) {
+        instance
+      } else {
+        throw new IllegalAccessException(s"Wrong actor: ${caller.path.name}")
+      }
+    }
   }
 
 }

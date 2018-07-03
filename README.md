@@ -1,4 +1,4 @@
-# play-ocap-demo
+# play-ocaps-demo
 
 This is a simple Play application in Scala that demonstrates the use of object capabilities, using the `ocaps` library.
 
@@ -29,181 +29,20 @@ def index: Action[AnyContent] = Action.async { implicit request =>
 
 The `GreetingService` has access to the `GreetingRepository`, which contains all of the greetings.  However, it does not hand out all the greetings to just anyone.  Instead, it keeps things to itself, and only hands out capabilities that are revocable.
 
-It does this by setting up a gatekeeper actor, which narrows the original finder so it can only find by locale, and then returns a revocable proxy around it.  The capability is then sealed, and sent back to the sender:
-
-```scala
-package com.tersesystems.demo.greeting
-
-import java.time.ZonedDateTime
-import java.util.Locale
-
-import akka.actor.{Actor, ActorRef, ActorSystem, Props}
-import akka.pattern.ask
-import akka.util.Timeout
-import com.tersesystems.demo.greeting.GreetingRepository.Finder
-import com.tersesystems.demo.greeting.GreetingService.Gatekeeper
-import ocaps.{Revocable, Revoker}
-
-import scala.concurrent.duration._
-import scala.concurrent.{ExecutionContext, Future}
-
-class GreetingService(system: ActorSystem, greetingRepository: GreetingRepository)(implicit executionContext: ExecutionContext) {
-
-  private implicit val timeout: Timeout = Timeout(100.millis)
-
-  private val gatekeeper = {
-    val rootFinder = GreetingRepository.Access().finder(greetingRepository)
-    system.actorOf(Gatekeeper.props(rootFinder), "gatekeeper")
-  }
-
-  private val greeter = system.actorOf(GreetingActor.props(gatekeeper), "greeter")
-
-  def greet(locale: Locale, time: ZonedDateTime): Future[String] = {
-    (greeter ? GreetingActor.Greet(locale, time)).mapTo[String]
-  }
-}
-
-object GreetingService {
-
-  class Gatekeeper(rootFinder: Finder) extends Actor {
-    private var revokerMap: Map[ActorRef, Revoker] = Map()
-
-    override def receive: Receive = {
-      case GreetingActor.RequestFinder(locale, sealer) =>
-        sender() ! sealer(locale, revocableFinder(restrictedFinder(locale)))
-      case Gatekeeper.RevokeAll =>
-        revokerMap.mapValues(_.revoke())
-    }
-
-    private def revocableFinder(finder: Finder) = {
-      // usually we use a macro, but use the explicit version here so we can print
-      // out the capability chain in the toString()
-      // val Revocable(revocableFinder, revoker) = ocaps.macros.revocable[Finder](finder)
-      val Revocable(revocableFinder, revoker) = Revocable(finder) { thunk =>
-        new Finder {
-          override def find(locale: Locale, zonedDateTime: ZonedDateTime): Option[Greeting] = thunk().find(locale, zonedDateTime)
-          override def toString: String = s"""RevocableFinder(${thunk()})"""
-        }
-      }
-      revokerMap += sender() -> revoker
-      context.system.actorOf(RevokeOnActorDeath.props(sender(), revoker))
-      revocableFinder
-    }
-
-    private[this] def restrictedFinder(localeRestriction: Locale) = new Finder {
-      override def find(locale: Locale, zonedDateTime: ZonedDateTime): Option[Greeting] = {
-        if (locale.getLanguage.equals(localeRestriction.getLanguage)) {
-          rootFinder.find(locale, zonedDateTime)
-        } else {
-          None
-        }
-      }
-
-      override def toString: String = s"""Finder($localeRestriction)"""
-    }
-  }
-
-  object Gatekeeper {
-    def props(finder: Finder): Props = Props(new Gatekeeper(finder))
-
-    case object RevokeAll
-  }
-}
-```
-
-In the event of an actor terminating unexpectedly, the `RevokeOnActorDeath` actor will revoke the capability automatically.
+It does this by setting up a gatekeeper actor, which narrows the original finder so it can only find by locale, and then returns a revocable proxy around it.  The capability is then sealed, and sent back to the sender.  After a set period of time, the gatekeeper will revoke the capability.  In the event of an actor terminating unexpectedly, the `RevokeOnActorDeath` actor will revoke the capability automatically.
 
 The `GreetingActor` starts off with no capabilities at all.  Instead, it starts off with a reference to the gatekeeper, and the ability to request capabilities if they have expired.
 
 Whenever the actor uses the `finder` capability, it must check for revocation.  If the capability has been revoked, then it aborts and asks for a new one.  Unfulfilled messages are on the stack until it can find a valid capability.
-
-```scala
-package com.tersesystems.demo.greeting
-
-import java.time.ZonedDateTime
-import java.util.Locale
-
-import akka.actor.{Actor, ActorRef, Props}
-import com.tersesystems.demo.greeting.GreetingRepository.Finder
-import ocaps.Brand.Sealer
-import ocaps.{Brand, RevokedException}
-
-object GreetingActor {
-  case class Greet(locale: Locale, zonedDateTime: ZonedDateTime)
-
-  case class RequestFinder(locale: Locale, sealer: Sealer[(Locale, Finder)])
-
-  def props(gatekeeper: ActorRef): Props = {
-    Props(classOf[GreetingActor], gatekeeper)
-  }
-}
-
-class GreetingActor(gatekeeper: ActorRef) extends Actor {
-  import GreetingActor._
-
-  private val logger = org.slf4j.LoggerFactory.getLogger("application")
-
-  private[this] val brand = Brand.create[(Locale, Finder)](s"Brand($self)")
-
-  private[this] var finderMap: Map[Locale, Finder] = Map()
-
-  private[this] var greeterStack: List[(ActorRef, Greet)] = List()
-
-  override def receive: Receive = greetReceive orElse finderReceive
-
-  def greetReceive: Receive = {
-    case g@Greet(locale, zonedDateTime) =>
-      finderMap.get(locale) match {
-        case None =>
-          logger.info(s"Locale $locale not found, going to ask gatekeeper for it.")
-          gatekeeper ! RequestFinder(locale, brand.sealer)
-          greeterStack = greeterStack :+ (sender() -> g)
-
-        case Some(finder) =>
-          logger.info(s"Locale $locale has a finder $finder, using it.")
-
-          try {
-            val message = greetingMessage(finder, locale, zonedDateTime)
-            sender() ! message
-          } catch {
-            case revoked: RevokedException =>
-              logger.error(s"Finder $finder was revoked!", revoked)
-              gatekeeper ! RequestFinder(locale, brand.sealer)
-              greeterStack = greeterStack :+ (sender() -> g)
-          }
-      }
-  }
-
-  def finderReceive: Receive = {
-    case brand((locale, finder)) =>
-      logger.info(s"New finder $finder received for locale $locale")
-
-      // Go through the stack and see if we can go back through these.
-      val matching = greeterStack.find{  case (_, greet) => locale == greet.locale }
-
-      var safeToRemove = List[(ActorRef, Greet)]()
-      try {
-        matching.foreach { case (person, greet) =>
-          val message = greetingMessage(finder, locale, greet.zonedDateTime)
-          person ! message
-          safeToRemove = safeToRemove :+ (person -> greet)
-        }
-
-        // If we got through the entire list without a revocation, then keep it for later.
-        finderMap += (locale -> finder)
-      } catch {
-        case revoked: RevokedException =>
-          logger.error(s"Finder $finder was revoked!", revoked)
-          gatekeeper ! RequestFinder(locale, brand.sealer)
-      } finally {
-        greeterStack = greeterStack.diff(safeToRemove)
-      }
-  }
-
-  private def greetingMessage(finder: Finder, locale: Locale, zonedDateTime: ZonedDateTime): String = {
-    finder.find(locale, zonedDateTime).map(_.message).getOrElse(s"No greeting found for ${self.path.name} actor!")
-  }
-}
-```
  
 One thing to note is that the actor makes use of an `ocaps.Brand` to ensure that the capability is not leaked.  The actor sends the sealer function with the request, and the gatekeeper then sends a sealed box back with the response.  The `brand` has an `unapply` method that can be used in pattern matching: `case brand((locale, finder)) =>` to transparently unseal the boxed value.
+
+### Why Not Use ActorRef as Capabilities?
+
+The actor model is a natural fit for capabilities, it's a natural question to ask why capabilities are being passed at the class level, rather than at the Actor level.
+
+The reason is that Akka Actors are primarily concerned with concurrency, and actors are a concurrency primitive rather than a security primitive.   As such, you can use `ActorSelection` to reference any actor by name, bypassing the capability ruleset.  There's a similar theme in Pony, where capabilities are 'more related to data safety (in the context of highly parallel computation) than to security" [1](http://habitatchronicles.com/2017/05/what-are-capabilities/#comment-99021).
+
+Also, it's easy to use ActorRef in an actor context, but awkward to use Actors outside of that context, and ActorRef is opaque.  
+
+Finally, capabilities implemented as classes are compile time safe, which is always nice.
